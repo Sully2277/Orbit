@@ -24,6 +24,21 @@
 </head>
 <body>
 <div id="root"></div>
+<div id="debug" style="color:#fff; font-family: ui-monospace, monospace; font-size: 12px; padding: 18px; white-space: pre-wrap; display:none; line-height:1.5;"></div>
+<script>
+  function showDebug(msg) {
+    var el = document.getElementById('debug');
+    el.style.display = 'block';
+    el.textContent += msg + "\n\n";
+  }
+  window.addEventListener('error', function (e) {
+    showDebug('Error: ' + (e.message || e) + (e.filename ? (' @ ' + e.filename.split('/').pop() + ':' + e.lineno) : ''));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var reason = e.reason && e.reason.message ? e.reason.message : e.reason;
+    showDebug('Unhandled promise rejection: ' + reason);
+  });
+</script>
 
 <!-- MusicKit JS: fires a 'musickitloaded' event on window when ready -->
 <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"></script>
