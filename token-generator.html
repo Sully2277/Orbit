@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Orbit — Token Generator</title>
+<style>
+  html, body { margin: 0; background: #000; color: #fff; font-family: -apple-system, sans-serif; }
+  body { padding: 24px 18px 60px; max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 20px; letter-spacing: 0.05em; margin-bottom: 4px; }
+  p.sub { color: #8c8c8c; font-size: 13px; margin-top: 0; margin-bottom: 24px; }
+  label { display: block; font-size: 13px; color: #cfcfcf; margin: 18px 0 6px; }
+  input[type="text"], textarea {
+    width: 100%; box-sizing: border-box; background: #1b1b1b; color: #fff;
+    border: 1px solid #2c2c2c; border-radius: 8px; padding: 10px;
+    font-size: 13px; font-family: ui-monospace, monospace;
+  }
+  input[type="file"] { color: #cfcfcf; font-size: 13px; }
+  button {
+    margin-top: 22px; width: 100%; background: #fff; color: #000; border: none;
+    border-radius: 999px; padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; }
+  #result { margin-top: 22px; display: none; }
+  #tokenOut { width: 100%; box-sizing: border-box; background: #0e0e0e; color: #9eff9e;
+    border: 1px solid #2c2c2c; border-radius: 8px; padding: 10px; font-size: 11px;
+    font-family: ui-monospace, monospace; word-break: break-all; height: 110px; }
+  #copyBtn { margin-top: 10px; background: #2c2c2c; color: #fff; }
+  #status { font-size: 12px; color: #ff8a8a; margin-top: 14px; white-space: pre-wrap; }
+  .note { font-size: 11px; color: #6b6b6b; margin-top: 30px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <h1>ORBIT — TOKEN GENERATOR</h1>
+  <p class="sub">Generates a MusicKit developer token on-device. Your private key is never uploaded anywhere — everything here runs locally in Safari.</p>
+
+  <label>Your .p8 key file</label>
+  <input type="file" id="keyfile" accept=".p8,.pem,.txt" />
+
+  <label>Team ID</label>
+  <input type="text" id="teamId" placeholder="e.g. ABCDE12345" autocapitalize="off" autocorrect="off" />
+
+  <label>Key ID</label>
+  <input type="text" id="keyId" placeholder="e.g. XYZ9876543" autocapitalize="off" autocorrect="off" />
+
+  <button id="genBtn">Generate token</button>
+
+  <div id="status"></div>
+
+  <div id="result">
+    <label>Developer token — copy this into the Orbit app</label>
+    <textarea id="tokenOut" readonly></textarea>
+    <button id="copyBtn">Copy token</button>
+  </div>
+
+  <div class="note">
+    This token is valid for ~180 days. If Apple Music ever stops connecting
+    in the app, just come back here and generate a fresh one.
+  </div>
+
+<script>
+function base64UrlFromBytes(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlFromString(str) {
+  const bytes = new TextEncoder().encode(str);
+  return base64UrlFromBytes(bytes);
+}
+
+function pemToBytes(pem) {
+  const b64 = pem
+    .replace(/-----BEGIN [^-]+-----/, "")
+    .replace(/-----END [^-]+-----/, "")
+    .replace(/\s+/g, "");
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+document.getElementById("genBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("status");
+  const resultEl = document.getElementById("result");
+  statusEl.textContent = "";
+  resultEl.style.display = "none";
+
+  const fileInput = document.getElementById("keyfile");
+  const teamId = document.getElementById("teamId").value.trim();
+  const keyId = document.getElementById("keyId").value.trim();
+
+  if (!fileInput.files[0] || !teamId || !keyId) {
+    statusEl.textContent = "Pick your .p8 file and fill in both IDs first.";
+    return;
+  }
+
+  try {
+    const pemText = await fileInput.files[0].text();
+    const keyBytes = pemToBytes(pemText);
+
+    const privateKey = await crypto.subtle.importKey(
+      "pkcs8",
+      keyBytes,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["sign"]
+    );
+
+    const header = { alg: "ES256", kid: keyId, typ: "JWT" };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = { iss: teamId, iat: now, exp: now + 175 * 24 * 60 * 60 };
+
+    const signingInput =
+      base64UrlFromString(JSON.stringify(header)) + "." + base64UrlFromString(JSON.stringify(payload));
+
+    const signatureBuffer = await crypto.subtle.sign(
+      { name: "ECDSA", hash: { name: "SHA-256" } },
+      privateKey,
+      new TextEncoder().encode(signingInput)
+    );
+
+    const token = signingInput + "." + base64UrlFromBytes(new Uint8Array(signatureBuffer));
+
+    document.getElementById("tokenOut").value = token;
+    resultEl.style.display = "block";
+  } catch (err) {
+    statusEl.textContent = "Couldn't generate a token: " + (err && err.message ? err.message : String(err)) +
+      "\n\nDouble-check the file is the unedited .p8 Apple gave you, and that Team ID / Key ID are correct.";
+  }
+});
+
+document.getElementById("copyBtn").addEventListener("click", async () => {
+  const text = document.getElementById("tokenOut").value;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = document.getElementById("copyBtn");
+    const original = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => (btn.textContent = original), 1200);
+  } catch (err) {
+    document.getElementById("tokenOut").select();
+  }
+});
+</script>
+</body>
+</html>

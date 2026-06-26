@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Orbit</title>
+<meta name="theme-color" content="#000000" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<meta name="apple-mobile-web-app-title" content="Orbit" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" href="icon-192.png" />
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overscroll-behavior: none; }
+  * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+  button { border: none; background: none; padding: 0; cursor: pointer; }
+  input { outline: none; }
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500&display=swap');
+  @keyframes eq0 { 0%,100%{height:4px} 50%{height:13px} }
+  @keyframes eq1 { 0%,100%{height:9px} 50%{height:4px} }
+  @keyframes eq2 { 0%,100%{height:6px} 50%{height:14px} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- MusicKit JS: fires a 'musickitloaded' event on window when ready -->
+<script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"></script>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect, useCallback } = React;
+
+// The developer token is entered in the app itself (see the connect screen)
+// and saved on-device — you never need to edit this file.
+const TOKEN_STORAGE_KEY = "orbit_dev_token";
+
+const COLORS = {
+  bgDeep: "#000000",
+  surface: "#0E0E0E",
+  surfaceRaised: "#1B1B1B",
+  ink: "#FFFFFF",
+  inkDim: "#8C8C8C",
+  ember: "#FFFFFF",
+  emberDeep: "#9A9A9A",
+  magenta: "#CFCFCF",
+  ring: "#050505",
+};
+
+const ART_GRADIENTS = [
+  "linear-gradient(135deg,#3a3a3a,#0c0c0c)",
+  "linear-gradient(135deg,#bdbdbd,#5a5a5a)",
+  "linear-gradient(135deg,#e8e8e8,#9a9a9a)",
+  "linear-gradient(135deg,#2a2a2a,#000000)",
+  "linear-gradient(135deg,#6e6e6e,#2c2c2c)",
+  "linear-gradient(135deg,#cfcfcf,#3d3d3d)",
+  "linear-gradient(135deg,#8a8a8a,#1a1a1a)",
+];
+
+const ROW_HEIGHT = 54;
+const VISIBLE_ROWS = 5;
+const CENTER_SLOT = 2;
+const STEP_DEGREES = 20;
+
+function formatTime(sec) {
+  if (!sec || isNaN(sec)) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function ChevronUp({ size = 18 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15" /></svg>;
+}
+function SkipBack({ size = 18 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor"><polygon points="19,5 19,19 9,12" /><rect x="5" y="5" width="2.5" height="14" /></svg>;
+}
+function SkipForward({ size = 18 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor"><polygon points="5,5 5,19 15,12" /><rect x="16.5" y="5" width="2.5" height="14" /></svg>;
+}
+function Play({ size = 18 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20" /></svg>;
+}
+function Pause({ size = 18 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>;
+}
+
+function OrbitClickWheelPlayer() {
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) || "");
+  const [tokenInput, setTokenInput] = useState("");
+  const [ready, setReady] = useState(false);
+  const [authorized, setAuthorized] = useState(false);
+  const [query, setQuery] = useState("indie pop");
+  const [results, setResults] = useState([]);
+  const [highlightIndex, setHighlightIndex] = useState(0);
+  const [nowPlayingIndex, setNowPlayingIndex] = useState(null);
+  const [nowTrack, setNowTrack] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [pulse, setPulse] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
+
+  const wheelRef = useRef(null);
+  const dragRef = useRef({ active: false, lastAngle: 0, accum: 0 });
+  const musicRef = useRef(null);
+
+  // --- MusicKit setup (runs once we have a token) ---
+  useEffect(() => {
+    if (!token) return;
+    function setup() {
+      try {
+        const instance = window.MusicKit.configure({
+          developerToken: token,
+          app: { name: "Orbit", build: "1.0.0" },
+        });
+        musicRef.current = instance;
+        setReady(true);
+        setAuthorized(!!instance.isAuthorized);
+
+        instance.addEventListener("playbackStateDidChange", () => {
+          setIsPlaying(!!instance.isPlaying);
+        });
+        instance.addEventListener("nowPlayingItemDidChange", () => {
+          const item = instance.nowPlayingItem;
+          if (item) {
+            setNowTrack({
+              title: item.title,
+              artist: item.artistName,
+              artworkUrl: item.artworkURL ? item.artworkURL(88, 88) : null,
+            });
+          }
+        });
+      } catch (err) {
+        setErrorMessage("MusicKit setup failed: " + (err?.message || String(err)));
+      }
+    }
+    if (window.MusicKit) {
+      setup();
+    } else {
+      document.addEventListener("musickitloaded", setup, { once: true });
+    }
+  }, [token]);
+
+  const saveToken = () => {
+    const trimmed = tokenInput.trim();
+    if (!trimmed) return;
+    localStorage.setItem(TOKEN_STORAGE_KEY, trimmed);
+    setToken(trimmed);
+    setErrorMessage(null);
+  };
+
+  const changeToken = () => {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    window.location.reload();
+  };
+
+  // --- progress polling while playing ---
+  useEffect(() => {
+    if (!isPlaying) return;
+    const id = setInterval(() => {
+      const instance = musicRef.current;
+      if (instance) setElapsed(instance.currentPlaybackTime || 0);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isPlaying]);
+
+  const flash = (key) => {
+    setPulse(key);
+    setTimeout(() => setPulse(null), 180);
+  };
+
+  const getAngle = (x, y) => {
+    const rect = wheelRef.current.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    return Math.atan2(y - cy, x - cx) * (180 / Math.PI);
+  };
+
+  const onPointerDown = useCallback((e) => {
+    dragRef.current = { active: true, lastAngle: getAngle(e.clientX, e.clientY), accum: 0 };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback((e) => {
+    if (!dragRef.current.active) return;
+    const angle = getAngle(e.clientX, e.clientY);
+    let delta = angle - dragRef.current.lastAngle;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+    dragRef.current.lastAngle = angle;
+    dragRef.current.accum += delta;
+    while (dragRef.current.accum >= STEP_DEGREES) {
+      dragRef.current.accum -= STEP_DEGREES;
+      setHighlightIndex((i) => Math.min(i + 1, Math.max(results.length - 1, 0)));
+    }
+    while (dragRef.current.accum <= -STEP_DEGREES) {
+      dragRef.current.accum += STEP_DEGREES;
+      setHighlightIndex((i) => Math.max(i - 1, 0));
+    }
+  }, [results.length]);
+
+  const onPointerUp = useCallback(() => {
+    dragRef.current.active = false;
+  }, []);
+
+  const connect = async () => {
+    const instance = musicRef.current;
+    if (!instance) return;
+    try {
+      await instance.authorize();
+      setAuthorized(true);
+    } catch (err) {
+      setErrorMessage("Authorization failed: " + (err?.message || String(err)));
+    }
+  };
+
+  const runSearch = async () => {
+    const instance = musicRef.current;
+    if (!instance || !query.trim()) return;
+    setErrorMessage(null);
+    try {
+      const storefront = instance.storefrontId || "us";
+      const res = await instance.api.music(`/v1/catalog/${storefront}/search`, {
+        term: query,
+        types: "songs",
+        limit: 15,
+      });
+      const songs = (res && res.data && res.data.results && res.data.results.songs && res.data.results.songs.data) || [];
+      const mapped = songs.map((s) => ({
+        id: s.id,
+        title: s.attributes.name,
+        artist: s.attributes.artistName,
+        duration: Math.round((s.attributes.durationInMillis || 0) / 1000),
+        artworkUrl: s.attributes.artwork
+          ? s.attributes.artwork.url.replace("{w}", "100").replace("{h}", "100")
+          : null,
+      }));
+      setResults(mapped);
+      setHighlightIndex(0);
+    } catch (err) {
+      setErrorMessage("Search failed — check your developer token. " + (err?.message || String(err)));
+    }
+  };
+
+  const selectHighlighted = async () => {
+    const instance = musicRef.current;
+    if (!instance || results.length === 0) return;
+    flash("center");
+    try {
+      await instance.setQueue({ songs: results.map((r) => r.id), startWith: highlightIndex });
+      await instance.play();
+      setNowPlayingIndex(highlightIndex);
+    } catch (err) {
+      setErrorMessage("Playback failed: " + (err?.message || String(err)));
+    }
+  };
+
+  const togglePlay = (e) => {
+    e.stopPropagation();
+    flash("bottom");
+    const instance = musicRef.current;
+    if (!instance) return;
+    if (instance.isPlaying) instance.pause();
+    else instance.play();
+  };
+
+  const skip = (dir) => async (e) => {
+    e.stopPropagation();
+    flash(dir > 0 ? "right" : "left");
+    const instance = musicRef.current;
+    if (!instance) return;
+    try {
+      if (dir > 0) await instance.skipToNextItem();
+      else await instance.skipToPreviousItem();
+    } catch (err) {}
+  };
+
+  const goHome = (e) => {
+    e.stopPropagation();
+    flash("top");
+    setHighlightIndex(0);
+  };
+
+  const duration = musicRef.current?.currentPlaybackDuration || 0;
+  const progressPct = duration ? (elapsed / duration) * 100 : 0;
+
+  return (
+    <div style={{ background: COLORS.bgDeep, minHeight: "100vh", fontFamily: "Inter, sans-serif" }}
+      className="w-full flex flex-col items-center justify-center p-6 gap-5">
+
+      <div className="text-center">
+        <div style={{ fontFamily: "Space Grotesk, sans-serif", color: COLORS.ink, letterSpacing: "0.08em" }} className="text-2xl font-bold">
+          ORBIT
+        </div>
+        <div style={{ color: COLORS.inkDim, fontFamily: "JetBrains Mono, monospace" }} className="text-xs mt-1">
+          a click-wheel for your library
+        </div>
+      </div>
+
+      <div style={{ width: "min(92vw, 340px)", background: "linear-gradient(180deg,#1c1c22,#0d0d10)", borderRadius: "38px", padding: "14px", boxShadow: "0 30px 60px -20px rgba(0,0,0,0.7), inset 0 0 0 1px rgba(255,255,255,0.04)" }}>
+        <div style={{ background: COLORS.surface, borderRadius: "26px", overflow: "hidden" }} className="flex flex-col">
+
+          <div className="flex items-center justify-between px-4 pt-3 pb-1">
+            <span style={{ color: COLORS.ink, fontFamily: "JetBrains Mono, monospace" }} className="text-xs font-medium">9:41</span>
+            <div style={{ color: COLORS.inkDim }} className="flex items-center gap-1 text-xs">
+              <span style={{ fontFamily: "JetBrains Mono, monospace" }}>5G</span>
+              <div style={{ width: 16, height: 9, border: `1px solid ${COLORS.inkDim}`, borderRadius: 2, position: "relative" }}>
+                <div style={{ position: "absolute", inset: 1, width: "70%", background: COLORS.inkDim, borderRadius: 1 }} />
+              </div>
+            </div>
+          </div>
+
+          {!token ? (
+            <div className="flex flex-col items-center justify-center gap-3 px-5" style={{ height: ROW_HEIGHT * VISIBLE_ROWS + 60 }}>
+              <div style={{ color: COLORS.inkDim, fontFamily: "JetBrains Mono, monospace" }} className="text-xs text-center">
+                Paste your MusicKit developer token (from token-generator.html)
+              </div>
+              <textarea value={tokenInput} onChange={(e) => setTokenInput(e.target.value)}
+                placeholder="eyJhbGciOiJFUzI1NiIs..."
+                rows={3}
+                style={{ width: "100%", background: COLORS.surfaceRaised, color: COLORS.ink, borderRadius: 10, padding: 10, fontSize: 11, fontFamily: "JetBrains Mono, monospace", resize: "none" }} />
+              <button onClick={saveToken}
+                style={{ background: "#fff", color: "#000", borderRadius: 999, padding: "10px 20px", fontFamily: "Space Grotesk, sans-serif", fontWeight: 600 }}>
+                Save token
+              </button>
+            </div>
+          ) : !authorized ? (
+            <div className="flex flex-col items-center justify-center gap-3 px-6" style={{ height: ROW_HEIGHT * VISIBLE_ROWS + 60 }}>
+              <div style={{ color: COLORS.inkDim, fontFamily: "JetBrains Mono, monospace" }} className="text-xs text-center">
+                {ready ? "Connect your Apple Music account to search and play." : "Loading MusicKit…"}
+              </div>
+              <button onClick={connect} disabled={!ready}
+                style={{ background: "#fff", color: "#000", borderRadius: 999, padding: "10px 20px", fontFamily: "Space Grotesk, sans-serif", fontWeight: 600, opacity: ready ? 1 : 0.4 }}>
+                Connect Apple Music
+              </button>
+              <button onClick={changeToken} style={{ color: COLORS.inkDim, fontFamily: "JetBrains Mono, monospace", fontSize: 11, textDecoration: "underline" }}>
+                use a different token
+              </button>
+            </div>
+          ) : (
+            <React.Fragment>
+              <div className="px-4 pt-2 pb-2 flex gap-2">
+                <input value={query} onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") runSearch(); }}
+                  placeholder="Search Apple Music"
+                  style={{ flex: 1, background: COLORS.surfaceRaised, color: COLORS.ink, borderRadius: 10, padding: "8px 10px", fontSize: 13, fontFamily: "Inter, sans-serif" }} />
+                <button onClick={runSearch} style={{ background: COLORS.ink, color: "#000", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontFamily: "Space Grotesk, sans-serif", fontWeight: 600 }}>
+                  Go
+                </button>
+              </div>
+
+              <div className="px-4 pb-3">
+                <div style={{ background: COLORS.surfaceRaised, borderRadius: "16px" }} className="flex items-center gap-3 p-2.5">
+                  {nowTrack && nowTrack.artworkUrl ? (
+                    <img src={nowTrack.artworkUrl} style={{ width: 42, height: 42, borderRadius: 10, objectFit: "cover", flexShrink: 0 }} />
+                  ) : (
+                    <div style={{ background: ART_GRADIENTS[(nowPlayingIndex || 0) % ART_GRADIENTS.length], width: 42, height: 42, borderRadius: "10px", flexShrink: 0 }} />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div style={{ color: COLORS.ink, fontFamily: "Space Grotesk, sans-serif" }} className="text-sm font-semibold truncate">
+                      {nowTrack ? nowTrack.title : "Nothing playing yet"}
+                    </div>
+                    <div style={{ color: COLORS.inkDim, fontFamily: "JetBrains Mono, monospace" }} className="text-xs truncate">
+                      {nowTrack ? `${nowTrack.artist} · ${formatTime(elapsed)} / ${formatTime(duration)}` : "search, then press the wheel's center"}
+                    </div>
+                  </div>
+                  {isPlaying && (
+                    <div className="flex items-end gap-0.5" style={{ height: 14 }}>
+                      {[0, 1, 2].map((b) => (
+                        <span key={b} style={{ width: 2.5, background: COLORS.ember, borderRadius: 1, animation: `eq${b} 0.9s ease-in-out infinite`, animationDelay: `${b * 0.15}s` }} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div style={{ height: 3, background: "rgba(255,255,255,0.08)", borderRadius: 2, marginTop: 8 }}>
+                  <div style={{ height: "100%", width: `${progressPct}%`, background: `linear-gradient(90deg, ${COLORS.ember}, ${COLORS.magenta})`, borderRadius: 2, transition: "width 0.4s linear" }} />
+                </div>
+              </div>
+
+              <div style={{ height: ROW_HEIGHT * VISIBLE_ROWS, overflow: "hidden", position: "relative" }}>
+                <div style={{ transform: `translateY(${-(highlightIndex - CENTER_SLOT) * ROW_HEIGHT}px)`, transition: "transform 0.25s cubic-bezier(0.2,0.8,0.2,1)" }}>
+                  {results.length === 0 && (
+                    <div style={{ height: ROW_HEIGHT, color: COLORS.inkDim, fontFamily: "JetBrains Mono, monospace" }} className="flex items-center justify-center text-xs">
+                      search to load tracks
+                    </div>
+                  )}
+                  {results.map((t, i) => {
+                    const isCursor = i === highlightIndex;
+                    const isNowPlaying = i === nowPlayingIndex;
+                    return (
+                      <div key={t.id} style={{ height: ROW_HEIGHT, padding: "0 16px", background: isCursor ? `linear-gradient(90deg, ${COLORS.ember}, ${COLORS.magenta})` : "transparent" }} className="flex items-center justify-between">
+                        <div className="min-w-0">
+                          <div style={{ color: isCursor ? "#000" : COLORS.ink, fontFamily: "Space Grotesk, sans-serif" }} className="text-sm font-medium truncate">{t.title}</div>
+                          <div style={{ color: isCursor ? "rgba(0,0,0,0.65)" : COLORS.inkDim, fontFamily: "JetBrains Mono, monospace" }} className="text-xs truncate">{t.artist}</div>
+                        </div>
+                        {isNowPlaying && (
+                          <div style={{ width: 6, height: 6, borderRadius: "50%", background: isCursor ? "#000" : COLORS.ember, flexShrink: 0 }} />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex justify-center py-6">
+                <div ref={wheelRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+                  style={{ width: 218, height: 218, borderRadius: "50%", background: `radial-gradient(circle at 35% 30%, ${COLORS.emberDeep}, #0000 0), linear-gradient(160deg, ${COLORS.ember}, ${COLORS.emberDeep})`, position: "relative", touchAction: "none", boxShadow: "0 10px 30px -8px rgba(0,0,0,0.6), inset 0 2px 6px rgba(255,255,255,0.5), inset 0 -4px 10px rgba(0,0,0,0.35)" }}
+                  className="cursor-grab active:cursor-grabbing select-none">
+
+                  <button onClick={goHome} style={{ position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)", opacity: pulse === "top" ? 1 : 0.85, color: "#111" }}><ChevronUp size={18} /></button>
+                  <button onClick={skip(-1)} style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", opacity: pulse === "left" ? 1 : 0.85, color: "#111" }}><SkipBack size={18} /></button>
+                  <button onClick={skip(1)} style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", opacity: pulse === "right" ? 1 : 0.85, color: "#111" }}><SkipForward size={18} /></button>
+                  <button onClick={togglePlay} style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", opacity: pulse === "bottom" ? 1 : 0.85, color: "#111" }}>{isPlaying ? <Pause size={18} /> : <Play size={18} />}</button>
+
+                  <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); selectHighlighted(); }}
+                    style={{ position: "absolute", top: "50%", left: "50%", width: 86, height: 86, transform: pulse === "center" ? "translate(-50%,-50%) scale(0.96)" : "translate(-50%,-50%) scale(1)", borderRadius: "50%", background: COLORS.ring, boxShadow: "inset 0 2px 4px rgba(255,255,255,0.08), 0 6px 14px rgba(0,0,0,0.5)", transition: "transform 0.12s ease" }} />
+                </div>
+              </div>
+            </React.Fragment>
+          )}
+        </div>
+      </div>
+
+      {errorMessage && (
+        <div style={{ color: "#ff6b6b", fontFamily: "JetBrains Mono, monospace", maxWidth: 300 }} className="text-xs text-center">
+          {errorMessage}
+        </div>
+      )}
+
+      <div style={{ color: COLORS.inkDim, fontFamily: "JetBrains Mono, monospace", maxWidth: 280 }} className="text-xs text-center">
+        drag the ring to browse · press center to play that track
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<OrbitClickWheelPlayer />);
+</script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("service-worker.js").catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
