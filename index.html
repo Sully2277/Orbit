@@ -41,7 +41,7 @@
 </script>
 
 <!-- MusicKit JS: fires a 'musickitloaded' event on window when ready -->
-<script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"></script>
+<script src="https://js-cdn.music.apple.com/musickit/v1/musickit.js"></script>
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -129,19 +129,20 @@ function OrbitClickWheelPlayer() {
     if (!token) return;
     function setup() {
       try {
-        const instance = window.MusicKit.configure({
+        window.MusicKit.configure({
           developerToken: token,
           app: { name: "Orbit", build: "1.0.0" },
         });
+        const instance = window.MusicKit.getInstance();
         musicRef.current = instance;
         setReady(true);
         setAuthorized(!!instance.isAuthorized);
 
         instance.addEventListener("playbackStateDidChange", () => {
-          setIsPlaying(!!instance.isPlaying);
+          setIsPlaying(!!instance.player.isPlaying);
         });
         instance.addEventListener("nowPlayingItemDidChange", () => {
-          const item = instance.nowPlayingItem;
+          const item = instance.player.nowPlayingItem;
           if (item) {
             setNowTrack({
               title: item.title,
@@ -179,7 +180,7 @@ function OrbitClickWheelPlayer() {
     if (!isPlaying) return;
     const id = setInterval(() => {
       const instance = musicRef.current;
-      if (instance) setElapsed(instance.currentPlaybackTime || 0);
+      if (instance) setElapsed(instance.player.currentPlaybackTime || 0);
     }, 1000);
     return () => clearInterval(id);
   }, [isPlaying]);
@@ -239,13 +240,8 @@ function OrbitClickWheelPlayer() {
     if (!instance || !query.trim()) return;
     setErrorMessage(null);
     try {
-      const storefront = instance.storefrontId || "us";
-      const res = await instance.api.music(`/v1/catalog/${storefront}/search`, {
-        term: query,
-        types: "songs",
-        limit: 15,
-      });
-      const songs = (res && res.data && res.data.results && res.data.results.songs && res.data.results.songs.data) || [];
+      const response = await instance.api.search(query, { types: ["songs"], limit: 15 });
+      const songs = (response && response.songs && response.songs.data) || [];
       const mapped = songs.map((s) => ({
         id: s.id,
         title: s.attributes.name,
@@ -262,17 +258,21 @@ function OrbitClickWheelPlayer() {
     }
   };
 
-  const selectHighlighted = async () => {
+  const playIndex = async (idx) => {
     const instance = musicRef.current;
-    if (!instance || results.length === 0) return;
-    flash("center");
+    if (!instance || !results[idx]) return;
     try {
-      await instance.setQueue({ songs: results.map((r) => r.id), startWith: highlightIndex });
-      await instance.play();
-      setNowPlayingIndex(highlightIndex);
+      await instance.setQueue({ song: results[idx].id });
+      await instance.player.play();
+      setNowPlayingIndex(idx);
     } catch (err) {
       setErrorMessage("Playback failed: " + (err?.message || String(err)));
     }
+  };
+
+  const selectHighlighted = () => {
+    flash("center");
+    playIndex(highlightIndex);
   };
 
   const togglePlay = (e) => {
@@ -280,19 +280,17 @@ function OrbitClickWheelPlayer() {
     flash("bottom");
     const instance = musicRef.current;
     if (!instance) return;
-    if (instance.isPlaying) instance.pause();
-    else instance.play();
+    if (instance.player.isPlaying) instance.player.pause();
+    else instance.player.play();
   };
 
-  const skip = (dir) => async (e) => {
+  const skip = (dir) => (e) => {
     e.stopPropagation();
     flash(dir > 0 ? "right" : "left");
-    const instance = musicRef.current;
-    if (!instance) return;
-    try {
-      if (dir > 0) await instance.skipToNextItem();
-      else await instance.skipToPreviousItem();
-    } catch (err) {}
+    const base = nowPlayingIndex !== null ? nowPlayingIndex : highlightIndex;
+    const next = Math.min(Math.max(base + dir, 0), Math.max(results.length - 1, 0));
+    setHighlightIndex(next);
+    playIndex(next);
   };
 
   const goHome = (e) => {
@@ -301,7 +299,7 @@ function OrbitClickWheelPlayer() {
     setHighlightIndex(0);
   };
 
-  const duration = musicRef.current?.currentPlaybackDuration || 0;
+  const duration = musicRef.current?.player?.currentPlaybackDuration || 0;
   const progressPct = duration ? (elapsed / duration) * 100 : 0;
 
   return (
